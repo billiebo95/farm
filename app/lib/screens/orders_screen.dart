@@ -28,7 +28,7 @@ class OrdersScreen extends StatelessWidget {
               const Text('Отправленные заказы', style: AppText.display),
               const SizedBox(height: 3),
               Text(
-                'Код доставки ${app.loginCode.trim().isEmpty ? '190172-04' : app.loginCode.trim()} · ${orders.length} заказов',
+                'Код доставки ${app.loginCode.trim()} · ${orders.length} заказов',
                 style: const TextStyle(fontSize: 13, color: AppColors.textSecondary),
               ),
             ],
@@ -82,14 +82,11 @@ class _OrderCard extends StatelessWidget {
               ],
             ),
           ),
-          Padding(
-            padding: const EdgeInsets.only(top: 9),
-            child: Row(
-              children: [
-                StatusChip(label: order.dbf.label, fg: order.dbf.fg, bg: order.dbf.bg, mono: true),
-                const Spacer(),
-                const Text('Открыть →', style: TextStyle(fontWeight: FontWeight.w600, fontSize: 12, color: AppColors.accent)),
-              ],
+          const Padding(
+            padding: EdgeInsets.only(top: 9),
+            child: Align(
+              alignment: Alignment.centerRight,
+              child: Text('Открыть →', style: TextStyle(fontWeight: FontWeight.w600, fontSize: 12, color: AppColors.accent)),
             ),
           ),
         ],

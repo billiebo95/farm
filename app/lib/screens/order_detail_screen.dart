@@ -10,8 +10,8 @@ import '../widgets/app_icons.dart';
 import '../widgets/chip_button.dart';
 import '../widgets/primary_button.dart';
 
-/// Full-screen order detail: line items, comment, and the DBF export
-/// status/columns for this order — pushed on top of the tab content.
+/// Full-screen order detail: line items, comment, and a repeat-order
+/// action — pushed on top of the tab content.
 class OrderDetailScreen extends StatelessWidget {
   const OrderDetailScreen({super.key, required this.order});
 
@@ -103,28 +103,6 @@ class OrderDetailScreen extends StatelessWidget {
                       ],
                     ),
                   ),
-                AppCard(
-                  margin: const EdgeInsets.only(bottom: 10),
-                  child: Column(
-                    crossAxisAlignment: CrossAxisAlignment.start,
-                    children: [
-                      const Text('Выгрузка DBF', style: AppText.label),
-                      const SizedBox(height: 10),
-                      _DetailRow('Файл', order.dbfFile, mono: true, last: false),
-                      _DetailRow('Папка на Диске', order.dbfFolder, last: false),
-                      _DetailRow('Статус', order.dbf.label, valueColor: order.dbf.fg, last: true),
-                      const SizedBox(height: 11),
-                      Container(
-                        padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
-                        decoration: BoxDecoration(color: AppColors.screenBg, borderRadius: BorderRadius.circular(11)),
-                        child: const Text(
-                          'Столбцы DBF — заглушка: KOD, NAIM, KOLVO, CENA, SUMMA, SROK, SHTRIH, KOD_DOST, DATA. Ждём структуру от поставщика — подставим один в один.',
-                          style: TextStyle(fontSize: 11, height: 1.5, color: AppColors.textSecondary),
-                        ),
-                      ),
-                    ],
-                  ),
-                ),
                 SecondaryButton(label: 'Повторить заказ', onPressed: () => app.repeatOrder(order)),
               ],
             ),
@@ -169,26 +147,3 @@ class _OrderLineRow extends StatelessWidget {
   }
 }
 
-class _DetailRow extends StatelessWidget {
-  const _DetailRow(this.label, this.value, {this.mono = false, this.valueColor, required this.last});
-  final String label;
-  final String value;
-  final bool mono;
-  final Color? valueColor;
-  final bool last;
-
-  @override
-  Widget build(BuildContext context) {
-    return Container(
-      padding: const EdgeInsets.symmetric(vertical: 9),
-      decoration: last ? null : const BoxDecoration(border: Border(bottom: BorderSide(color: AppColors.borderHairline))),
-      child: Row(
-        mainAxisAlignment: MainAxisAlignment.spaceBetween,
-        children: [
-          Text(label, style: const TextStyle(fontSize: 13, color: AppColors.textMuted)),
-          Text(value, style: TextStyle(fontFamily: mono ? 'monospace' : null, fontWeight: FontWeight.w600, fontSize: mono ? 12 : 13, color: valueColor ?? AppColors.textPrimary)),
-        ],
-      ),
-    );
-  }
-}

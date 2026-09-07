@@ -22,6 +22,7 @@ class CartScreen extends StatelessWidget {
     final lines = app.cart.entries.map((e) => (MockData.findProduct(e.key)!, e.value)).toList();
     final hasItems = app.cartHasItems;
     final enough = app.cartMinMet;
+    final registered = app.isRegistered;
     final total = app.cartTotal;
 
     return Column(
@@ -103,14 +104,18 @@ class CartScreen extends StatelessWidget {
                 Padding(
                   padding: const EdgeInsets.symmetric(vertical: 8),
                   child: Text(
-                    enough ? 'Минимальная сумма заказа выполнена' : 'Добавьте ещё на ${app.money(AppState.minOrderSum - total)} — минимум ${app.money(AppState.minOrderSum)}',
-                    style: TextStyle(fontWeight: FontWeight.w500, fontSize: 12, color: enough ? AppColors.accent : AppColors.warnFg),
+                    !registered
+                        ? 'Аптека не зарегистрирована — заказ отправить нельзя'
+                        : enough
+                            ? 'Минимальная сумма заказа выполнена'
+                            : 'Добавьте ещё на ${app.money(AppState.minOrderSum - total)} — минимум ${app.money(AppState.minOrderSum)}',
+                    style: TextStyle(fontWeight: FontWeight.w500, fontSize: 12, color: (!registered || !enough) ? AppColors.warnFg : AppColors.accent),
                   ),
                 ),
                 SizedBox(
                   height: 52,
                   child: ElevatedButton(
-                    onPressed: enough ? app.placeOrder : null,
+                    onPressed: !registered ? app.jumpToRegistration : (enough ? app.placeOrder : null),
                     style: ElevatedButton.styleFrom(
                       backgroundColor: AppColors.accent,
                       disabledBackgroundColor: AppColors.disabledBg,
@@ -119,7 +124,7 @@ class CartScreen extends StatelessWidget {
                       elevation: 0,
                       shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(14)),
                     ),
-                    child: const Text('Отправить заказ · DBF на Диск', style: AppText.button),
+                    child: Text(registered ? 'Отправить заказ' : 'Зарегистрировать аптеку', style: AppText.button),
                   ),
                 ),
               ],
@@ -244,7 +249,7 @@ class _DeliveryCard extends StatelessWidget {
         children: [
           const Text('Доставка и оплата', style: AppText.label),
           const SizedBox(height: 11),
-          _SummaryRow('Код доставки', app.loginCode.trim().isEmpty ? '190172-04' : app.loginCode.trim(), mono: true),
+          _SummaryRow('Код доставки', app.loginCode.trim(), mono: true),
           _SummaryRow('Регион', app.region),
           _SummaryRow('Адрес', app.regAddr, alignRight: true),
           _SummaryRow('Оплата', 'Отсрочка 14 дней', last: true),

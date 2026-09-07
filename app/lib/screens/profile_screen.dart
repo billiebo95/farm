@@ -5,17 +5,17 @@ import '../data/mock_data.dart';
 import '../state/app_state.dart';
 import '../theme/app_theme.dart';
 import '../widgets/app_card.dart';
+import '../widgets/labeled_field.dart';
 import '../widgets/primary_button.dart';
 
-/// The pharmacy's account tab: identity, region, pricing info, price sync
-/// and the entry point into the supplier admin panel.
+/// The pharmacy's account tab: editable identity, region, pricing info,
+/// price sync and the entry point into the supplier admin panel.
 class ProfileScreen extends StatelessWidget {
   const ProfileScreen({super.key});
 
   @override
   Widget build(BuildContext context) {
     final app = context.watch<AppState>();
-    final code = app.loginCode.trim().isEmpty ? '190172-04' : app.loginCode.trim();
 
     return Column(
       children: [
@@ -29,26 +29,7 @@ class ProfileScreen extends StatelessWidget {
           child: ListView(
             padding: const EdgeInsets.all(12),
             children: [
-              AppCard(
-                padding: const EdgeInsets.all(14),
-                margin: const EdgeInsets.only(bottom: 10),
-                child: Column(
-                  crossAxisAlignment: CrossAxisAlignment.start,
-                  children: [
-                    Text(app.regName, style: const TextStyle(fontWeight: FontWeight.w600, fontSize: 17, height: 1.25)),
-                    const SizedBox(height: 3),
-                    Text(app.regAddr, style: const TextStyle(fontSize: 13, height: 1.45, color: AppColors.textSecondary)),
-                    const SizedBox(height: 12),
-                    Row(
-                      children: [
-                        Expanded(child: _CodeTile(label: 'Код клиента', value: code.split('-').first)),
-                        const SizedBox(width: 8),
-                        Expanded(child: _CodeTile(label: 'Код доставки', value: code)),
-                      ],
-                    ),
-                  ],
-                ),
-              ),
+              _IdentityCard(app: app),
               AppCard(
                 padding: const EdgeInsets.all(14),
                 margin: const EdgeInsets.only(bottom: 10),
@@ -89,7 +70,7 @@ class ProfileScreen extends StatelessWidget {
                 ),
               ),
               SecondaryButton(
-                label: app.syncing ? 'Читаю файл…' : 'Обновить прайс с Google Диска',
+                label: app.syncing ? 'Обновляю…' : 'Обновить прайс',
                 onPressed: app.syncing ? null : app.syncPrice,
               ),
               const SizedBox(height: 9),
@@ -111,6 +92,96 @@ class ProfileScreen extends StatelessWidget {
           ),
         ),
       ],
+    );
+  }
+}
+
+/// Identity card at the top of the account tab. In view mode it just shows
+/// name/address/codes; tapping the pencil switches to editable fields for
+/// name, phone and address (the delivery code itself is assigned at
+/// registration and isn't user-editable) — changes save live, there's no
+/// separate draft to discard.
+class _IdentityCard extends StatefulWidget {
+  const _IdentityCard({required this.app});
+  final AppState app;
+
+  @override
+  State<_IdentityCard> createState() => _IdentityCardState();
+}
+
+class _IdentityCardState extends State<_IdentityCard> {
+  bool _editing = false;
+
+  @override
+  Widget build(BuildContext context) {
+    final app = widget.app;
+    final code = app.loginCode.trim();
+
+    return AppCard(
+      padding: const EdgeInsets.all(14),
+      margin: const EdgeInsets.only(bottom: 10),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Row(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Expanded(
+                child: _editing
+                    ? Column(
+                        crossAxisAlignment: CrossAxisAlignment.start,
+                        children: [
+                          LabeledField(label: 'Название аптеки', value: app.regName, onChanged: (v) => app.setRegField(name: v)),
+                          const SizedBox(height: 10),
+                          LabeledField(
+                            label: 'Телефон',
+                            value: app.regPhone,
+                            onChanged: (v) => app.setRegField(phone: v),
+                            mono: true,
+                            keyboardType: TextInputType.phone,
+                          ),
+                          const SizedBox(height: 10),
+                          LabeledField(label: 'Адрес доставки', value: app.regAddr, onChanged: (v) => app.setRegField(addr: v)),
+                        ],
+                      )
+                    : Column(
+                        crossAxisAlignment: CrossAxisAlignment.start,
+                        children: [
+                          Text(app.displayName, style: const TextStyle(fontWeight: FontWeight.w600, fontSize: 17, height: 1.25)),
+                          const SizedBox(height: 3),
+                          Text(
+                            app.regAddr.isEmpty ? 'Адрес не указан' : app.regAddr,
+                            style: const TextStyle(fontSize: 13, height: 1.45, color: AppColors.textSecondary),
+                          ),
+                          if (app.regPhone.isNotEmpty) ...[
+                            const SizedBox(height: 2),
+                            Text(app.regPhone, style: const TextStyle(fontSize: 13, height: 1.45, color: AppColors.textSecondary)),
+                          ],
+                        ],
+                      ),
+              ),
+              IconButton(
+                onPressed: () => setState(() {
+                  if (_editing) app.flash('Данные аптеки сохранены');
+                  _editing = !_editing;
+                }),
+                icon: Icon(_editing ? Icons.check_circle : Icons.edit_outlined, color: AppColors.accent),
+                tooltip: _editing ? 'Готово' : 'Изменить',
+              ),
+            ],
+          ),
+          if (code.isNotEmpty) ...[
+            const SizedBox(height: 12),
+            Row(
+              children: [
+                Expanded(child: _CodeTile(label: 'Код клиента', value: code.split('-').first)),
+                const SizedBox(width: 8),
+                Expanded(child: _CodeTile(label: 'Код доставки', value: code)),
+              ],
+            ),
+          ],
+        ],
+      ),
     );
   }
 }

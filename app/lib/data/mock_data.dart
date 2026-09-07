@@ -129,8 +129,10 @@ class MockData {
     ),
   ];
 
-  static const clients = <Client>[
-    Client(code: '190172-04', name: 'Аптека «Вита-Плюс»', region: 'Чечня', discount: -2),
+  /// Registered pharmacies. Mutable — [AppState.finishRegistration] appends
+  /// newly self-registered pharmacies here, so [findClient]/[AppState.isRegistered]
+  /// recognize their delivery code on future logins.
+  static List<Client> clients = <Client>[
     Client(code: '190455-01', name: 'Аптека «Мед-Лайн»', region: 'Дагестан', discount: -4),
     Client(code: '190780-02', name: 'Аптека «Здоровье»', region: 'Чечня', discount: 0),
   ];
@@ -139,9 +141,9 @@ class MockData {
     Order(
       number: 'Z2418760431',
       date: '04.09.2026 10:12',
-      client: 'Аптека «Вита-Плюс»',
-      code: '190172-04',
-      region: 'Чечня',
+      client: 'Аптека «Мед-Лайн»',
+      code: '190455-01',
+      region: 'Дагестан',
       status: OrderStatus.assembling,
       comment: 'Привезти до 12:00, звонить Ирине',
       dbf: DbfState.ok,
@@ -154,9 +156,9 @@ class MockData {
     Order(
       number: 'Z2418093117',
       date: '28.08.2026 09:40',
-      client: 'Аптека «Вита-Плюс»',
-      code: '190172-04',
-      region: 'Чечня',
+      client: 'Аптека «Мед-Лайн»',
+      code: '190455-01',
+      region: 'Дагестан',
       status: OrderStatus.delivered,
       comment: '',
       dbf: DbfState.ok,

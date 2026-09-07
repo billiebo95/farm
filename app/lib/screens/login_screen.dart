@@ -41,7 +41,7 @@ class LoginScreen extends StatelessWidget {
                   onChanged: app.setLoginCode,
                   height: 56,
                   mono: true,
-                  hint: 'напр. 190172-04',
+                  hint: 'напр. 190455-01',
                 ),
                 const SizedBox(height: 12),
                 PrimaryButton(label: 'Войти', onPressed: app.doLogin),

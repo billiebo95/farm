@@ -33,7 +33,7 @@ class CatalogScreen extends StatelessWidget {
                     child: Column(
                       crossAxisAlignment: CrossAxisAlignment.start,
                       children: [
-                        Text('${app.regName} · ${app.region}', style: AppText.label.copyWith(color: AppColors.textSecondary), maxLines: 1, overflow: TextOverflow.ellipsis),
+                        Text('${app.displayName} · ${app.region}', style: AppText.label.copyWith(color: AppColors.textSecondary), maxLines: 1, overflow: TextOverflow.ellipsis),
                         const SizedBox(height: 2),
                         const Text('Прайс', style: AppText.display),
                       ],
@@ -94,6 +94,7 @@ class CatalogScreen extends StatelessWidget {
           child: ListView(
             padding: const EdgeInsets.fromLTRB(11, 9, 11, 14),
             children: [
+              if (!app.isRegistered) _RegistrationBanner(app: app),
               if (app.priceStale) _StaleBanner(app: app),
               for (final p in items) ProductCard(product: p),
               if (items.isEmpty)
@@ -119,6 +120,48 @@ class CatalogScreen extends StatelessWidget {
   }
 }
 
+class _RegistrationBanner extends StatelessWidget {
+  const _RegistrationBanner({required this.app});
+  final AppState app;
+
+  @override
+  Widget build(BuildContext context) {
+    return Container(
+      margin: const EdgeInsets.only(bottom: 9),
+      padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 11),
+      decoration: BoxDecoration(
+        color: AppColors.warnBg,
+        borderRadius: BorderRadius.circular(13),
+        border: Border.all(color: const Color(0xFFF0D8C6)),
+      ),
+      child: Row(
+        children: [
+          const Expanded(
+            child: Text(
+              'Прайс открыт для просмотра. Чтобы оформлять заказы, зарегистрируйте аптеку.',
+              style: TextStyle(fontWeight: FontWeight.w500, fontSize: 12, height: 1.45, color: AppColors.dangerFg),
+            ),
+          ),
+          const SizedBox(width: 10),
+          SizedBox(
+            height: 34,
+            child: TextButton(
+              onPressed: app.jumpToRegistration,
+              style: TextButton.styleFrom(
+                backgroundColor: AppColors.warnFg,
+                foregroundColor: Colors.white,
+                padding: const EdgeInsets.symmetric(horizontal: 12),
+                shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(9)),
+              ),
+              child: const Text('Зарегистрироваться', style: TextStyle(fontWeight: FontWeight.w700, fontSize: 12)),
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+}
+
 class _StaleBanner extends StatelessWidget {
   const _StaleBanner({required this.app});
   final AppState app;
@@ -137,7 +180,7 @@ class _StaleBanner extends StatelessWidget {
         children: [
           Expanded(
             child: Text(
-              'Прайс обновлён ${app.priceUpdatedAt}. Проверить Google Диск?',
+              'Прайс обновлён ${app.priceUpdatedAt}. Проверить обновления?',
               style: const TextStyle(fontWeight: FontWeight.w500, fontSize: 12, height: 1.45, color: AppColors.dangerFg),
             ),
           ),

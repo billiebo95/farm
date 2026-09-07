@@ -1,10 +1,12 @@
 import 'dart:async';
+import 'dart:math';
 
 import 'package:flutter/foundation.dart';
 
 import '../data/mock_data.dart';
 import '../data/order_sync_service.dart';
 import '../data/price_sync_service.dart';
+import '../models/client.dart';
 import '../models/order.dart';
 import '../models/product.dart';
 
@@ -51,13 +53,16 @@ class AppState extends ChangeNotifier {
   String? openOrderNumber; // order shown in the full-screen detail view
 
   // ---- login / session ----
-  String loginCode = '190172-04';
+  String loginCode = '';
 
   // ---- registration draft ----
-  String regName = 'Аптека «Вита-Плюс»';
-  String regPhone = '+7 922 418-06-31';
-  String regInn = '7712045890';
-  String regAddr = 'Грозный, ул. А. Шерипова, 14';
+  // Also doubles as the signed-in pharmacy's own editable profile once
+  // logged in (see ProfileScreen) — empty until the user fills it in,
+  // either through registration or by editing the account tab.
+  String regName = '';
+  String regPhone = '';
+  String regInn = '';
+  String regAddr = '';
   String region = MockData.regions.first;
 
   // ---- catalog ----
@@ -113,6 +118,16 @@ class AppState extends ChangeNotifier {
   }
 
   String pct(int v) => '${v > 0 ? '+' : ''}$v%';
+
+  // ───────────────────────── registration status ─────────────────────────
+
+  /// Whether the currently entered delivery code belongs to a registered
+  /// pharmacy — gates ordering (see [placeOrder]) but never browsing: an
+  /// unregistered visitor can still look through the catalog.
+  bool get isRegistered => MockData.findClient(loginCode.trim()) != null;
+
+  /// Name to show in headers/cards before/without a completed registration.
+  String get displayName => regName.trim().isEmpty ? 'Гостевой доступ' : regName.trim();
 
   // ───────────────────────── discounts / pricing ─────────────────────────
 
@@ -265,7 +280,7 @@ class AppState extends ChangeNotifier {
   Future<void> syncPrice({bool silent = false}) async {
     if (syncing) return;
     syncing = true;
-    if (!silent) flash('Читаю прайс с Google Диска…');
+    if (!silent) flash('Обновляю прайс…');
     notifyListeners();
 
     try {
@@ -277,7 +292,9 @@ class AppState extends ChangeNotifier {
     } catch (e) {
       // Keep whatever price list we already had (seed data or a previous
       // successful sync) — a failed refresh shouldn't empty the catalog.
-      if (!silent) flash('Не удалось обновить прайс: $e');
+      // The underlying error (network/parsing detail) isn't shown to the
+      // client — just that a refresh didn't happen.
+      if (!silent) flash('Не удалось обновить прайс, попробуйте ещё раз');
     } finally {
       syncing = false;
       notifyListeners();
@@ -306,12 +323,16 @@ class AppState extends ChangeNotifier {
       return;
     }
     final c = MockData.findClient(loginCode.trim());
+    screen = AppScreen.catalog;
     if (c != null) {
       regName = c.name;
       region = c.region;
+      flash('${c.name} · скидка ${pct(globalDiscountValue + clientDisc(loginCode.trim()))}');
+    } else {
+      // Unknown code: let them browse, but ordering stays locked (see
+      // placeOrder) until they complete registration.
+      flash('Код не найден — прайс открыт для просмотра. Для заказа зарегистрируйте аптеку.');
     }
-    screen = AppScreen.catalog;
-    flash('${c?.name ?? 'Аптека'} · скидка ${pct(globalDiscountValue + clientDisc(loginCode.trim()))}');
   }
 
   void goLogin() {
@@ -345,9 +366,30 @@ class AppState extends ChangeNotifier {
     notifyListeners();
   }
 
+  /// Registers the pharmacy being drafted in [regName]/[regPhone]/[regInn]/
+  /// [regAddr]/[region], assigning it a fresh delivery code and logging in
+  /// as it — unlocking ordering immediately (no manager review loop, unlike
+  /// the copy on the pending screen suggests; there's no backend to review
+  /// anything against here).
   void finishRegistration() {
+    final code = _generateDeliveryCode();
+    final name = regName.trim().isEmpty ? 'Аптека без названия' : regName.trim();
+    MockData.clients = [...MockData.clients, Client(code: code, name: name, region: region, discount: 0)];
+    regName = name;
+    loginCode = code;
     screen = AppScreen.catalog;
-    notifyListeners();
+    flash('Аптека зарегистрирована · код доставки $code');
+  }
+
+  String _generateDeliveryCode() {
+    final rnd = Random();
+    String candidate;
+    do {
+      final client = 100000 + rnd.nextInt(900000);
+      final suffix = rnd.nextInt(100).toString().padLeft(2, '0');
+      candidate = '$client-$suffix';
+    } while (MockData.findClient(candidate) != null);
+    return candidate;
   }
 
   void setRegField({String? name, String? phone, String? inn, String? addr}) {
@@ -368,7 +410,7 @@ class AppState extends ChangeNotifier {
   List<Order> get allOrders => [...extraOrders, ...MockData.baseOrders];
 
   List<Order> get myOrders {
-    final code = loginCode.trim().isEmpty ? '190172-04' : loginCode.trim();
+    final code = loginCode.trim();
     return allOrders.where((o) => o.code == code).toList();
   }
 
@@ -408,6 +450,11 @@ class AppState extends ChangeNotifier {
   }
 
   void placeOrder() {
+    if (!isRegistered) {
+      flash('Чтобы оформить заказ, зарегистрируйте аптеку');
+      jumpToRegistration();
+      return;
+    }
     if (cartTotal < minOrderSum) return;
     for (final entry in cart.entries) {
       final p = MockData.findProduct(entry.key)!;
@@ -417,7 +464,7 @@ class AppState extends ChangeNotifier {
       }
     }
     final number = 'Z${_orderSuffix()}';
-    final code = loginCode.trim().isEmpty ? '190172-04' : loginCode.trim();
+    final code = loginCode.trim();
     final lines = cart.entries.map((e) {
       final p = MockData.findProduct(e.key)!;
       return OrderLine(productId: e.key, qty: e.value, price: finalPrice(p.basePrice).roundToDouble());
@@ -438,15 +485,16 @@ class AppState extends ChangeNotifier {
     drafts.clear();
     comment = '';
     screen = AppScreen.orders;
-    flash('Заказ $number отправлен · выгружается на Google Диск');
+    flash('Заказ принят');
     _uploadOrder(order);
   }
 
-  /// Fire-and-forget upload to the PriceSync endpoint's order log. Updates
-  /// the order's [DbfState] badge based on the outcome; a failure leaves the
-  /// order visible (it's not lost — just not yet on Drive) and surfaces a
-  /// toast so the user knows to retry later rather than assuming it went
-  /// through.
+  /// Fire-and-forget upload to the PriceSync endpoint's order log (an
+  /// implementation detail — the client only ever sees "Заказ принят"/an
+  /// error toast, never that it's specifically Google Drive on the other
+  /// end). Updates the order's [DbfState] badge based on the outcome; a
+  /// failure leaves the order visible rather than pretending it went
+  /// through, but doesn't expose the underlying error to the client.
   Future<void> _uploadOrder(Order order) async {
     try {
       await _orderSync.submitOrder(order);
@@ -456,7 +504,7 @@ class AppState extends ChangeNotifier {
         notifyListeners();
       }
     } catch (e) {
-      flash('Не удалось выгрузить заказ ${order.number} на Диск: $e');
+      flash('Не удалось отправить заказ ${order.number}, попробуйте ещё раз');
     }
   }
 
