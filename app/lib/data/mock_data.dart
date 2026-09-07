@@ -1,4 +1,5 @@
 import '../models/client.dart';
+import '../models/debt.dart';
 import '../models/order.dart';
 import '../models/product.dart';
 
@@ -133,9 +134,21 @@ class MockData {
   /// newly self-registered pharmacies here, so [findClient]/[AppState.isRegistered]
   /// recognize their delivery code on future logins.
   static List<Client> clients = <Client>[
-    Client(code: '190455-01', name: 'Аптека «Мед-Лайн»', region: 'Дагестан', discount: -4),
-    Client(code: '190780-02', name: 'Аптека «Здоровье»', region: 'Чечня', discount: 0),
+    Client(code: '190455-01', name: 'Аптека «Мед-Лайн»', region: 'Дагестан', discount: -4, phone: '+7 928 000-00-01'),
+    Client(code: '190780-02', name: 'Аптека «Здоровье»', region: 'Чечня', discount: 0, phone: '+7 928 000-00-02'),
   ];
+
+  /// Seed debt ledger, keyed by delivery code — one client already owes part
+  /// of a shipment taken on credit, so the "Долги" admin tab has something to
+  /// look at before any real operation gets recorded. [AppState.syncDebts]
+  /// replaces this wholesale with whatever PriceSync.gs currently has in its
+  /// "Долги (Аптека Опт)" sheet, same as the price list.
+  static final Map<String, List<DebtOperation>> debtOps = {
+    '190455-01': [
+      DebtOperation(kind: DebtOpKind.charge, amount: 18000, date: '28.08.2026', balanceAfter: 18000, comment: 'Отгрузка в долг'),
+      DebtOperation(kind: DebtOpKind.payment, amount: 8000, date: '02.09.2026', balanceAfter: 10000, comment: 'Частичная оплата'),
+    ],
+  };
 
   static final baseOrders = <Order>[
     Order(
