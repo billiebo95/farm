@@ -3,6 +3,7 @@ import 'dart:async';
 import 'package:flutter/foundation.dart';
 
 import '../data/mock_data.dart';
+import '../data/order_sync_service.dart';
 import '../data/price_sync_service.dart';
 import '../models/order.dart';
 import '../models/product.dart';
@@ -29,7 +30,9 @@ class AppState extends ChangeNotifier {
   static const int _defaultGlobalDiscount = -3;
   static const _autoSyncInterval = Duration(minutes: 10);
 
-  AppState({PriceSyncService? priceSync}) : _priceSync = priceSync ?? const PriceSyncService() {
+  AppState({PriceSyncService? priceSync, OrderSyncService? orderSync})
+      : _priceSync = priceSync ?? const PriceSyncService(),
+        _orderSync = orderSync ?? const OrderSyncService() {
     // Live price on launch, then keep it fresh in the background — the
     // Google Apps Script endpoint itself re-checks Google Drive every 10
     // minutes, so polling any faster wouldn't see anything new.
@@ -38,6 +41,7 @@ class AppState extends ChangeNotifier {
   }
 
   final PriceSyncService _priceSync;
+  final OrderSyncService _orderSync;
   Timer? _autoSyncTimer;
 
   // ---- navigation ----
@@ -434,14 +438,26 @@ class AppState extends ChangeNotifier {
     drafts.clear();
     comment = '';
     screen = AppScreen.orders;
-    flash('Заказ $number отправлен · DBF выгружается на Google Диск');
-    Future.delayed(const Duration(seconds: 2), () {
-      final i = extraOrders.indexWhere((o) => o.number == number);
+    flash('Заказ $number отправлен · выгружается на Google Диск');
+    _uploadOrder(order);
+  }
+
+  /// Fire-and-forget upload to the PriceSync endpoint's order log. Updates
+  /// the order's [DbfState] badge based on the outcome; a failure leaves the
+  /// order visible (it's not lost — just not yet on Drive) and surfaces a
+  /// toast so the user knows to retry later rather than assuming it went
+  /// through.
+  Future<void> _uploadOrder(Order order) async {
+    try {
+      await _orderSync.submitOrder(order);
+      final i = extraOrders.indexWhere((o) => o.number == order.number);
       if (i != -1) {
         extraOrders[i] = extraOrders[i].copyWith(dbf: DbfState.ok);
         notifyListeners();
       }
-    });
+    } catch (e) {
+      flash('Не удалось выгрузить заказ ${order.number} на Диск: $e');
+    }
   }
 
   String _orderSuffix() {

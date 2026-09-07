@@ -11,6 +11,10 @@
  *     JSON и кладёт его в кэш-файл на Диске.
  *  2. doGet() — веб-приложение, отдаёт содержимое кэш-файла по ссылке.
  *     Приложение просто делает HTTP GET на эту ссылку.
+ *  3. doPost() — принимает оформленный в приложении заказ (JSON) и дописывает
+ *     его строкой в отдельную Google Таблицу "Заказы (Аптека Опт)" на Диске
+ *     (создаётся автоматически при первом заказе). Файл "Прайс.xlsx" при
+ *     этом не трогается.
  *
  * НАСТРОЙКА (один раз, БЕЗ "Advanced Services"):
  *  1. script.google.com -> New project.
@@ -42,9 +46,25 @@ const SYNC_INTERVAL_MINUTES = 10;
 // Имя кэш-файла с готовым JSON (создаётся автоматически в корне Drive).
 const CACHE_FILE_NAME = 'price_cache.json';
 
+// Имя Google Таблицы с журналом заказов (создаётся автоматически).
+const ORDERS_SHEET_NAME = 'Заказы (Аптека Опт)';
+
 const PROP_CACHE_FILE_ID = 'cacheFileId';
 const PROP_LAST_MODIFIED = 'lastModifiedIso';
 const PROP_LAST_SIZE = 'lastSize';
+const PROP_ORDERS_SHEET_ID = 'ordersSheetId';
+
+const ORDERS_HEADER = [
+  'Дата',
+  'Номер заказа',
+  'Клиент',
+  'Код доставки',
+  'Регион',
+  'Комментарий',
+  'Позиций',
+  'Сумма',
+  'Товары (JSON)',
+];
 
 /** Разовая настройка: создаёт триггер по расписанию и делает первую синхронизацию. */
 function setup() {
@@ -203,6 +223,60 @@ function writeCache_(jsonString) {
 
   const file = DriveApp.createFile(CACHE_FILE_NAME, jsonString, MimeType.PLAIN_TEXT);
   props.setProperty(PROP_CACHE_FILE_ID, file.getId());
+}
+
+/**
+ * Веб-приложение: принимает оформленный заказ и дописывает строку в
+ * журнал заказов. Ожидаемое тело запроса (JSON):
+ *   { number, date, client, code, region, comment, total, lines: [
+ *       { code, name, price, quantity, sum }, ...
+ *   ] }
+ */
+function doPost(e) {
+  try {
+    const body = JSON.parse(e.postData.contents);
+    const sheet = getOrCreateOrdersSheet_();
+
+    sheet.appendRow([
+      body.date || new Date().toISOString(),
+      body.number || '',
+      body.client || '',
+      body.code || '',
+      body.region || '',
+      body.comment || '',
+      Array.isArray(body.lines) ? body.lines.length : 0,
+      toNumber_(body.total),
+      JSON.stringify(body.lines || []),
+    ]);
+
+    return ContentService.createTextOutput(JSON.stringify({ ok: true }))
+      .setMimeType(ContentService.MimeType.JSON);
+  } catch (err) {
+    return ContentService.createTextOutput(JSON.stringify({ ok: false, error: String(err) }))
+      .setMimeType(ContentService.MimeType.JSON);
+  }
+}
+
+/** Находит (или создаёт при первом заказе) Google Таблицу — журнал заказов. */
+function getOrCreateOrdersSheet_() {
+  const props = PropertiesService.getScriptProperties();
+  const savedId = props.getProperty(PROP_ORDERS_SHEET_ID);
+
+  if (savedId) {
+    try {
+      return SpreadsheetApp.openById(savedId).getSheets()[0];
+    } catch (e) {
+      // Таблицу кто-то удалил вручную — создадим заново.
+    }
+  }
+
+  const ss = SpreadsheetApp.create(ORDERS_SHEET_NAME);
+  const sheet = ss.getSheets()[0];
+  sheet.appendRow(ORDERS_HEADER);
+  sheet.setFrozenRows(1);
+
+  props.setProperty(PROP_ORDERS_SHEET_ID, ss.getId());
+  return sheet;
 }
 
 /** Веб-приложение: отдаёт текущий кэш как JSON. */
