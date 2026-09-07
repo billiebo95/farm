@@ -1,0 +1,223 @@
+/**
+ * PriceSync — держит прайс из Google Drive (файл "Прайс.xlsx") синхронизированным
+ * и отдаёт его как JSON по HTTP для мобильного приложения apteka_opt.
+ *
+ * Как это работает:
+ *  1. checkAndSync() запускается по расписанию (см. setup()) каждые 10 минут.
+ *     Смотрит modifiedTime и размер файла "Прайс.xlsx" в Google Drive.
+ *     Если файл изменился (заменили целиком ИЛИ отредактировали ячейки
+ *     через встроенный просмотрщик Office) — конвертирует его во временную
+ *     Google Таблицу (через Drive REST API), читает лист "Город", собирает
+ *     JSON и кладёт его в кэш-файл на Диске.
+ *  2. doGet() — веб-приложение, отдаёт содержимое кэш-файла по ссылке.
+ *     Приложение просто делает HTTP GET на эту ссылку.
+ *
+ * НАСТРОЙКА (один раз, БЕЗ "Advanced Services"):
+ *  1. script.google.com -> New project.
+ *  2. Слева, в списке файлов, нажми на шестерёнку "Project Settings" и
+ *     поставь галочку "Show 'appsscript.json' manifest file in editor".
+ *  3. Вернись в редактор (иконка "<>" Editor). В списке файлов появится
+ *     appsscript.json — открой его и замени содержимое на файл
+ *     appsscript.json из этого же комплекта.
+ *  4. Открой Code.gs, удали заглушку, вставь этот код.
+ *  5. Проверь SOURCE_FILE_ID ниже — сейчас он указывает на "Прайс.xlsx".
+ *  6. Наверху в списке функций выбери "setup" -> Run.
+ *     Google спросит разрешения — это твой аккаунт, скрипт трогает
+ *     только твой Drive, разреши (может быть экран "Google не проверил
+ *     это приложение" — жми "Дополнительно" -> "Перейти на PriceSync").
+ *  7. Deploy -> New deployment -> тип "Web app".
+ *     Execute as: Me. Who has access: Anyone.
+ *  8. Скопируй итоговый URL (заканчивается на /exec) и пришли его мне.
+ */
+
+// ID файла "Прайс.xlsx" в папке "Прайсы" на Google Drive.
+const SOURCE_FILE_ID = '14pBOP4Y9kkULQJMJx0d1TBUFcTM4vL4b';
+
+// Имя листа с товарами внутри файла.
+const SHEET_NAME = 'Город';
+
+// Как часто проверять файл на изменения (минуты).
+const SYNC_INTERVAL_MINUTES = 10;
+
+// Имя кэш-файла с готовым JSON (создаётся автоматически в корне Drive).
+const CACHE_FILE_NAME = 'price_cache.json';
+
+const PROP_CACHE_FILE_ID = 'cacheFileId';
+const PROP_LAST_MODIFIED = 'lastModifiedIso';
+const PROP_LAST_SIZE = 'lastSize';
+
+/** Разовая настройка: создаёт триггер по расписанию и делает первую синхронизацию. */
+function setup() {
+  ScriptApp.getProjectTriggers().forEach(function (t) {
+    if (t.getHandlerFunction() === 'checkAndSync') {
+      ScriptApp.deleteTrigger(t);
+    }
+  });
+
+  ScriptApp.newTrigger('checkAndSync')
+    .timeBased()
+    .everyMinutes(SYNC_INTERVAL_MINUTES)
+    .create();
+
+  checkAndSync();
+
+  Logger.log('Готово. Триггер создан, первая синхронизация выполнена.');
+}
+
+/** Вызывается по расписанию. Проверяет изменения и пересобирает кэш при необходимости. */
+function checkAndSync() {
+  const file = DriveApp.getFileById(SOURCE_FILE_ID);
+  const modifiedIso = file.getLastUpdated().toISOString();
+  const size = file.getSize();
+
+  const props = PropertiesService.getScriptProperties();
+  const lastModified = props.getProperty(PROP_LAST_MODIFIED);
+  const lastSize = props.getProperty(PROP_LAST_SIZE);
+
+  const changed = modifiedIso !== lastModified || String(size) !== lastSize;
+  if (!changed) {
+    return;
+  }
+
+  const items = convertAndReadPriceList_(SOURCE_FILE_ID, SHEET_NAME);
+
+  const payload = {
+    updatedAt: new Date().toISOString(),
+    sourceModifiedAt: modifiedIso,
+    count: items.length,
+    items: items,
+  };
+
+  writeCache_(JSON.stringify(payload));
+
+  props.setProperty(PROP_LAST_MODIFIED, modifiedIso);
+  props.setProperty(PROP_LAST_SIZE, String(size));
+
+  Logger.log('Синхронизировано: ' + items.length + ' товаров.');
+}
+
+/**
+ * Конвертирует xlsx во временную Google Таблицу (через Drive REST API v3,
+ * без Advanced Services), читает лист SHEET_NAME, превращает строки
+ * в массив объектов и удаляет временную копию.
+ */
+function convertAndReadPriceList_(fileId, sheetName) {
+  const tmpId = driveCopyConvertToSheet_(fileId);
+
+  try {
+    const ss = SpreadsheetApp.openById(tmpId);
+    const sheet = ss.getSheetByName(sheetName);
+    if (!sheet) {
+      throw new Error('Лист "' + sheetName + '" не найден в файле.');
+    }
+
+    const values = sheet.getDataRange().getValues();
+    // Наименование, Производитель, Срок Годности, Цена, Остаток,
+    // Мин\заказ, Штрих-код, Код товара, Маркировка.
+    const rows = values.slice(1);
+
+    const items = [];
+    for (let i = 0; i < rows.length; i++) {
+      const r = rows[i];
+      const name = (r[0] || '').toString().trim();
+      if (!name) continue;
+
+      items.push({
+        id: (r[7] || '').toString().trim(),
+        name: name,
+        producer: (r[1] || '').toString().trim(),
+        period: formatDate_(r[2]),
+        basePrice: toNumber_(r[3]),
+        stock: Math.trunc(toNumber_(r[4])),
+        minOrder: Math.trunc(toNumber_(r[5])) || 1,
+        barcode: (r[6] || '').toString().trim(),
+        marking: (r[8] || '').toString().trim(),
+      });
+    }
+
+    return items;
+  } finally {
+    driveDeleteFile_(tmpId); // не засоряем Drive временными копиями
+  }
+}
+
+/** Копирует файл в Google Таблицу через чистый REST-вызов (без Advanced Services). */
+function driveCopyConvertToSheet_(fileId) {
+  const token = ScriptApp.getOAuthToken();
+  const url = 'https://www.googleapis.com/drive/v3/files/' + fileId + '/copy';
+  const resp = UrlFetchApp.fetch(url, {
+    method: 'post',
+    contentType: 'application/json',
+    headers: { Authorization: 'Bearer ' + token },
+    payload: JSON.stringify({
+      name: 'tmp_price_conversion_' + new Date().getTime(),
+      mimeType: 'application/vnd.google-apps.spreadsheet',
+    }),
+    muteHttpExceptions: true,
+  });
+
+  const code = resp.getResponseCode();
+  if (code !== 200) {
+    throw new Error('Drive copy failed (' + code + '): ' + resp.getContentText());
+  }
+  return JSON.parse(resp.getContentText()).id;
+}
+
+function driveDeleteFile_(fileId) {
+  const token = ScriptApp.getOAuthToken();
+  const url = 'https://www.googleapis.com/drive/v3/files/' + fileId;
+  UrlFetchApp.fetch(url, {
+    method: 'delete',
+    headers: { Authorization: 'Bearer ' + token },
+    muteHttpExceptions: true,
+  });
+}
+
+function toNumber_(v) {
+  if (typeof v === 'number') return v;
+  const n = parseFloat(String(v).replace(',', '.'));
+  return isNaN(n) ? 0 : n;
+}
+
+function formatDate_(v) {
+  if (v instanceof Date) {
+    return Utilities.formatDate(v, Session.getScriptTimeZone(), 'dd.MM.yyyy');
+  }
+  return (v || '').toString().trim();
+}
+
+/** Создаёт (при первом запуске) или перезаписывает кэш-файл с готовым JSON. */
+function writeCache_(jsonString) {
+  const props = PropertiesService.getScriptProperties();
+  const cachedId = props.getProperty(PROP_CACHE_FILE_ID);
+
+  if (cachedId) {
+    try {
+      const file = DriveApp.getFileById(cachedId);
+      file.setContent(jsonString);
+      return;
+    } catch (e) {
+      // Файл кто-то удалил вручную — создадим заново.
+    }
+  }
+
+  const file = DriveApp.createFile(CACHE_FILE_NAME, jsonString, MimeType.PLAIN_TEXT);
+  props.setProperty(PROP_CACHE_FILE_ID, file.getId());
+}
+
+/** Веб-приложение: отдаёт текущий кэш как JSON. */
+function doGet(e) {
+  const props = PropertiesService.getScriptProperties();
+  let cachedId = props.getProperty(PROP_CACHE_FILE_ID);
+
+  if (!cachedId) {
+    checkAndSync();
+    cachedId = props.getProperty(PROP_CACHE_FILE_ID);
+  }
+
+  const content = cachedId
+    ? DriveApp.getFileById(cachedId).getBlob().getDataAsString()
+    : '{"items":[],"count":0}';
+
+  return ContentService.createTextOutput(content).setMimeType(ContentService.MimeType.JSON);
+}

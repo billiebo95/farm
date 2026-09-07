@@ -3,6 +3,7 @@ import 'dart:async';
 import 'package:flutter/foundation.dart';
 
 import '../data/mock_data.dart';
+import '../data/price_sync_service.dart';
 import '../models/order.dart';
 import '../models/product.dart';
 
@@ -26,6 +27,18 @@ const List<(AdminTab, String)> kAdminTabs = [
 class AppState extends ChangeNotifier {
   static const int minOrderSum = 15000;
   static const int _defaultGlobalDiscount = -3;
+  static const _autoSyncInterval = Duration(minutes: 10);
+
+  AppState({PriceSyncService? priceSync}) : _priceSync = priceSync ?? const PriceSyncService() {
+    // Live price on launch, then keep it fresh in the background — the
+    // Google Apps Script endpoint itself re-checks Google Drive every 10
+    // minutes, so polling any faster wouldn't see anything new.
+    syncPrice(silent: true);
+    _autoSyncTimer = Timer.periodic(_autoSyncInterval, (_) => syncPrice(silent: true));
+  }
+
+  final PriceSyncService _priceSync;
+  Timer? _autoSyncTimer;
 
   // ---- navigation ----
   AppScreen screen = AppScreen.login;
@@ -78,6 +91,7 @@ class AppState extends ChangeNotifier {
   @override
   void dispose() {
     _toastTimer?.cancel();
+    _autoSyncTimer?.cancel();
     super.dispose();
   }
 
@@ -237,15 +251,42 @@ class AppState extends ChangeNotifier {
 
   void scan() => flash('Сканер штрихкода — откроется камера');
 
-  Future<void> syncPrice() async {
+  /// Pulls the live price list from Google Drive (via the PriceSync Apps
+  /// Script endpoint) and replaces [MockData.priceList] with it.
+  ///
+  /// [silent] skips the "Читаю прайс…" toast and, on failure, the error
+  /// toast — used for the on-launch and background auto-refresh calls so
+  /// they don't interrupt the user; the manual "Обновить" buttons pass the
+  /// default (false) to get full feedback either way.
+  Future<void> syncPrice({bool silent = false}) async {
     if (syncing) return;
     syncing = true;
-    flash('Читаю прайс с Google Диска…');
-    await Future.delayed(const Duration(milliseconds: 1300));
-    syncing = false;
-    priceStale = false;
-    priceUpdatedAt = 'только что';
-    flash('Прайс обновлён · ${MockData.priceList.length} позиций');
+    if (!silent) flash('Читаю прайс с Google Диска…');
+    notifyListeners();
+
+    try {
+      final result = await _priceSync.fetchPriceList();
+      MockData.priceList = result.items;
+      priceStale = false;
+      priceUpdatedAt = _formatUpdatedAt(result.sourceModifiedAt ?? result.fetchedAt);
+      if (!silent) flash('Прайс обновлён · ${result.items.length} позиций');
+    } catch (e) {
+      // Keep whatever price list we already had (seed data or a previous
+      // successful sync) — a failed refresh shouldn't empty the catalog.
+      if (!silent) flash('Не удалось обновить прайс: $e');
+    } finally {
+      syncing = false;
+      notifyListeners();
+    }
+  }
+
+  String _formatUpdatedAt(DateTime dt) {
+    final local = dt.toLocal();
+    final now = DateTime.now();
+    final time = '${local.hour.toString().padLeft(2, '0')}:${local.minute.toString().padLeft(2, '0')}';
+    final sameDay = local.year == now.year && local.month == now.month && local.day == now.day;
+    if (sameDay) return 'сегодня, $time';
+    return '${local.day.toString().padLeft(2, '0')}.${local.month.toString().padLeft(2, '0')}, $time';
   }
 
   // ───────────────────────── login / registration ─────────────────────────

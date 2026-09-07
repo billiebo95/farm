@@ -13,7 +13,10 @@ class MockData {
   static const regions = ['Чечня', 'Дагестан'];
   static const catalogFilters = ['Все', 'В заказе', 'Заканчивается', 'Маркировка ЧЗ', 'В наличии'];
 
-  static const priceList = <Product>[
+  /// Seed/fallback data, shown until the first live sync completes (or if it
+  /// fails). [AppState.syncPrice] replaces this list wholesale with whatever
+  /// PriceSync.gs currently has cached from "Прайс.xlsx".
+  static List<Product> priceList = <Product>[
     Product(
       id: '10412',
       name: 'Амоксиклав табл. 875 мг + 125 мг №14',

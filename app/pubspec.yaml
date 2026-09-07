@@ -38,6 +38,10 @@ dependencies:
   # State management for the app-wide store (cart, catalog, orders, admin state).
   provider: ^6.1.2
 
+  # HTTP client used to pull the live price list from the Google Apps Script
+  # endpoint that mirrors the "Прайс.xlsx" file on Google Drive.
+  http: ^1.2.2
+
 dev_dependencies:
   flutter_test:
     sdk: flutter
