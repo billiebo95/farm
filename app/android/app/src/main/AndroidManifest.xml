@@ -2,7 +2,7 @@
     <!-- Needed for PriceSyncService to reach the Google Apps Script price-list endpoint. -->
     <uses-permission android:name="android.permission.INTERNET" />
     <application
-        android:label="Аптека Опт"
+        android:label="ШАХ ФАРМ"
         android:name="${applicationName}"
         android:icon="@mipmap/ic_launcher">
         <activity
