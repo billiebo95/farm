@@ -5,10 +5,18 @@ name: Web Build & Deploy
 # APKs — this is the "приложение веб" version, served at
 # https://<owner>.github.io/<repo>/ once Pages is switched on (see below).
 #
+# Split into two jobs on purpose:
+#  - `build` runs on every push and pull request, same as android-build.yml —
+#    it's the actual CI signal (analyze/test/build), and doesn't touch the
+#    Pages API at all, so it works fine before Pages is even turned on.
+#  - `deploy` only runs for a push to main, and is the only job that needs
+#    Pages-specific permissions — a red PR build never gets a chance to
+#    publish anything.
+#
 # One-time setup required (can't be done from a workflow file): open this
 # repo's Settings → Pages → Build and deployment → Source, and pick
-# "GitHub Actions". Until that's set, this workflow builds successfully but
-# the deploy step has nothing to publish to.
+# "GitHub Actions". Until that's set, `build` still passes on every PR —
+# only `deploy` has nothing to publish to.
 on:
   push:
     branches:
@@ -16,26 +24,19 @@ on:
     paths:
       - "app/**"
       - ".github/workflows/web-deploy.yml"
+  pull_request:
+    paths:
+      - "app/**"
+      - ".github/workflows/web-deploy.yml"
   workflow_dispatch:
 
 permissions:
   contents: read
-  pages: write
-  id-token: write
-
-# Only one Pages deployment at a time; let an in-flight one finish rather
-# than cancel it mid-publish.
-concurrency:
-  group: "pages"
-  cancel-in-progress: false
 
 jobs:
-  build-and-deploy:
-    name: Build Flutter web & publish to Pages
+  build:
+    name: Build Flutter web
     runs-on: ubuntu-latest
-    environment:
-      name: github-pages
-      url: ${{ steps.deployment.outputs.page_url }}
     defaults:
       run:
         working-directory: app
@@ -64,13 +65,42 @@ jobs:
       - name: Build web (release)
         run: flutter build web --release --base-href /${{ github.event.repository.name }}/
 
+      - name: Upload build output
+        uses: actions/upload-artifact@v4
+        with:
+          name: web-build
+          path: app/build/web
+
+  deploy:
+    name: Publish to GitHub Pages
+    needs: build
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    permissions:
+      pages: write
+      id-token: write
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    # Only one Pages deployment at a time; let an in-flight one finish
+    # rather than cancel it mid-publish.
+    concurrency:
+      group: "pages"
+      cancel-in-progress: false
+    steps:
+      - name: Download build output
+        uses: actions/download-artifact@v4
+        with:
+          name: web-build
+          path: web-build
+
       - name: Configure Pages
         uses: actions/configure-pages@v5
 
-      - name: Upload build output
+      - name: Upload to Pages
         uses: actions/upload-pages-artifact@v3
         with:
-          path: app/build/web
+          path: web-build
 
       - name: Deploy to GitHub Pages
         id: deployment
