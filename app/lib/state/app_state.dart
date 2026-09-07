@@ -3,21 +3,24 @@ import 'dart:math';
 
 import 'package:flutter/foundation.dart';
 
+import '../data/debt_sync_service.dart';
 import '../data/mock_data.dart';
 import '../data/order_sync_service.dart';
 import '../data/price_sync_service.dart';
 import '../models/client.dart';
+import '../models/debt.dart';
 import '../models/order.dart';
 import '../models/product.dart';
 
 enum AppScreen { login, registration, catalog, cart, orders, profile, supplierLock, supplierAdmin }
 
-enum AdminTab { discounts, price, orders }
+enum AdminTab { discounts, price, orders, debts }
 
 const List<(AdminTab, String)> kAdminTabs = [
   (AdminTab.discounts, 'Скидки'),
   (AdminTab.price, 'Прайс и DBF'),
   (AdminTab.orders, 'Заказы клиентов'),
+  (AdminTab.debts, 'Долги'),
 ];
 
 /// App-wide store: navigation, cart, discounts, catalog search/filter,
@@ -32,18 +35,26 @@ class AppState extends ChangeNotifier {
   static const int _defaultGlobalDiscount = -3;
   static const _autoSyncInterval = Duration(minutes: 10);
 
-  AppState({PriceSyncService? priceSync, OrderSyncService? orderSync})
+  AppState({PriceSyncService? priceSync, OrderSyncService? orderSync, DebtSyncService? debtSync})
       : _priceSync = priceSync ?? const PriceSyncService(),
-        _orderSync = orderSync ?? const OrderSyncService() {
+        _orderSync = orderSync ?? const OrderSyncService(),
+        _debtSync = debtSync ?? const DebtSyncService() {
     // Live price on launch, then keep it fresh in the background — the
     // Google Apps Script endpoint itself re-checks Google Drive every 10
     // minutes, so polling any faster wouldn't see anything new.
     syncPrice(silent: true);
-    _autoSyncTimer = Timer.periodic(_autoSyncInterval, (_) => syncPrice(silent: true));
+    // Same idea for the debt ledger, so every admin device converges on the
+    // same balances rather than only what it posted itself.
+    syncDebts();
+    _autoSyncTimer = Timer.periodic(_autoSyncInterval, (_) {
+      syncPrice(silent: true);
+      syncDebts();
+    });
   }
 
   final PriceSyncService _priceSync;
   final OrderSyncService _orderSync;
+  final DebtSyncService _debtSync;
   Timer? _autoSyncTimer;
 
   // ---- navigation ----
@@ -96,6 +107,12 @@ class AppState extends ChangeNotifier {
   String? globalDraft;
   final Map<String, int> clientDiscs = {};
   final Map<String, String> clientDiscDrafts = {};
+
+  // ---- supplier / admin — debts ----
+  final Map<String, List<DebtOperation>> debtOps = {for (final e in MockData.debtOps.entries) e.key: [...e.value]};
+  final Map<String, String> debtChargeDrafts = {};
+  final Map<String, String> debtPaymentDrafts = {};
+  final Map<String, String> debtComments = {};
 
   @override
   void dispose() {
@@ -374,7 +391,7 @@ class AppState extends ChangeNotifier {
   void finishRegistration() {
     final code = _generateDeliveryCode();
     final name = regName.trim().isEmpty ? 'Аптека без названия' : regName.trim();
-    MockData.clients = [...MockData.clients, Client(code: code, name: name, region: region, discount: 0)];
+    MockData.clients = [...MockData.clients, Client(code: code, name: name, region: region, discount: 0, phone: regPhone.trim())];
     regName = name;
     loginCode = code;
     screen = AppScreen.catalog;
@@ -566,6 +583,10 @@ class AppState extends ChangeNotifier {
   void setAdminTab(AdminTab t) {
     adminTab = t;
     notifyListeners();
+    // Pull the latest ledger the moment the tab is opened rather than
+    // waiting for the next background tick — cheap, and it's the screen
+    // where a stale balance would actually mislead someone.
+    if (t == AdminTab.debts) syncDebts();
   }
 
   void setAdminRegion(String r) {
@@ -614,6 +635,173 @@ class AppState extends ChangeNotifier {
   String clientDiscountText(String code) {
     final draft = clientDiscDrafts[code];
     return draft ?? '${clientDisc(code)}';
+  }
+
+  // ───────────────────────── supplier / admin — debts ─────────────────────────
+
+  /// Current outstanding balance — the running balance left by the last
+  /// operation, or 0 if the client has none on record.
+  double debtBalance(String code) {
+    final ops = debtOps[code];
+    return (ops == null || ops.isEmpty) ? 0 : ops.last.balanceAfter;
+  }
+
+  bool hasDebt(String code) => debtBalance(code) > 0.005;
+
+  /// Full history for the admin card / SMS text, newest first.
+  List<DebtOperation> debtHistory(String code) => (debtOps[code] ?? const <DebtOperation>[]).reversed.toList();
+
+  String debtChargeText(String code) => debtChargeDrafts[code] ?? '';
+  String debtPaymentText(String code) => debtPaymentDrafts[code] ?? '';
+  String debtCommentText(String code) => debtComments[code] ?? '';
+
+  void typeDebtCharge(String code, String raw) {
+    debtChargeDrafts[code] = raw.replaceAll(RegExp(r'[^0-9]'), '');
+    notifyListeners();
+  }
+
+  void typeDebtPayment(String code, String raw) {
+    debtPaymentDrafts[code] = raw.replaceAll(RegExp(r'[^0-9]'), '');
+    notifyListeners();
+  }
+
+  void setDebtComment(String code, String v) {
+    debtComments[code] = v;
+    notifyListeners();
+  }
+
+  /// Charges a debt onto the client — a shipment handed over on credit.
+  void addDebtCharge(String code) {
+    final amount = double.tryParse(debtChargeDrafts[code] ?? '');
+    if (amount == null || amount <= 0) {
+      flash('Введите сумму долга');
+      return;
+    }
+    debtChargeDrafts.remove(code);
+    _appendDebtOp(code, DebtOpKind.charge, amount);
+    flash('Долг добавлен · ${money(amount)}');
+  }
+
+  /// Registers a payment from the client — partial or, if it covers the
+  /// whole balance, full. Clamped to the outstanding balance so the ledger
+  /// never goes negative on a mistyped amount.
+  void payDebt(String code) {
+    final amount = double.tryParse(debtPaymentDrafts[code] ?? '');
+    if (amount == null || amount <= 0) {
+      flash('Введите сумму оплаты');
+      return;
+    }
+    debtPaymentDrafts.remove(code);
+    _registerPayment(code, amount);
+  }
+
+  /// Shortcut for "погасить полностью" — pays exactly the current balance.
+  void payDebtInFull(String code) {
+    final balance = debtBalance(code);
+    if (balance <= 0.005) {
+      flash('Долга нет — платить нечего');
+      return;
+    }
+    debtPaymentDrafts.remove(code);
+    _registerPayment(code, balance);
+  }
+
+  void _registerPayment(String code, double amount) {
+    final balance = debtBalance(code);
+    final applied = amount > balance ? balance : amount;
+    if (applied <= 0) {
+      flash('Долга нет — платить нечего');
+      return;
+    }
+    _appendDebtOp(code, DebtOpKind.payment, applied);
+    final left = debtBalance(code);
+    if (amount > balance + 0.005) {
+      flash('Списано ${money(applied)} — на остальное долга не было');
+    } else {
+      flash(left <= 0.005 ? 'Долг погашен полностью' : 'Оплата принята · остаток ${money(left)}');
+    }
+  }
+
+  void _appendDebtOp(String code, DebtOpKind kind, double amount) {
+    final ops = debtOps.putIfAbsent(code, () => []);
+    final prevBalance = ops.isEmpty ? 0.0 : ops.last.balanceAfter;
+    final balanceAfter = kind == DebtOpKind.charge ? prevBalance + amount : prevBalance - amount;
+    final comment = (debtComments[code] ?? '').trim();
+    final op = DebtOperation(kind: kind, amount: amount, date: 'сегодня', balanceAfter: balanceAfter, comment: comment);
+
+    ops.add(op);
+    debtComments.remove(code);
+    notifyListeners();
+    _uploadDebtOp(code, op);
+  }
+
+  /// Fire-and-forget upload to the debt journal — same shape as
+  /// [_uploadOrder]: the operation is already applied locally, this just
+  /// keeps the shared ledger (and every other admin device) in sync.
+  Future<void> _uploadDebtOp(String code, DebtOperation op) async {
+    try {
+      await _debtSync.submitOperation(
+        code: code,
+        client: MockData.findClient(code)?.name ?? code,
+        kind: op.kind,
+        amount: op.amount,
+        balanceAfter: op.balanceAfter,
+        date: op.date,
+        comment: op.comment,
+      );
+    } catch (e) {
+      flash('Не удалось синхронизировать операцию по долгу, попробуйте ещё раз');
+    }
+  }
+
+  /// Pulls the shared debt ledger from the Apps Script endpoint. Silent by
+  /// design (called on launch, on tab switch and on the background timer,
+  /// never as a direct user action) — a failure just leaves whatever ledger
+  /// this device already has (seed data or its own local operations).
+  Future<void> syncDebts() async {
+    try {
+      final remote = await _debtSync.fetchLedger();
+      if (remote.isNotEmpty) {
+        debtOps
+          ..clear()
+          ..addAll(remote);
+        notifyListeners();
+      }
+    } catch (e) {
+      // Keep whatever debt ledger we already have.
+    }
+  }
+
+  /// Text quoted in the debt-history SMS — current balance plus the most
+  /// recent operations, newest first.
+  String debtSmsText(String code) {
+    final name = MockData.findClient(code)?.name ?? code;
+    final buf = StringBuffer('${MockData.companyName}. $name.\n');
+    buf.write('Текущий долг: ${money(debtBalance(code))}.\n');
+    buf.write('История операций:');
+    for (final op in debtHistory(code).take(10)) {
+      buf.write('\n${op.date} — ${op.kind.label} ${money(op.amount)}, остаток ${money(op.balanceAfter)}');
+    }
+    return buf.toString();
+  }
+
+  /// Sends the client's debt history by SMS, via the Apps Script endpoint's
+  /// SMS gateway (see PriceSync.gs) — the client's own phone, from
+  /// [Client.phone].
+  Future<void> sendDebtSms(String code) async {
+    final client = MockData.findClient(code);
+    final phone = client?.phone.trim() ?? '';
+    if (phone.isEmpty) {
+      flash('У клиента не указан телефон');
+      return;
+    }
+    flash('Отправляю СМС…');
+    try {
+      await _debtSync.sendSms(phone: phone, text: debtSmsText(code));
+      flash('СМС отправлена · ${client?.name ?? code}');
+    } catch (e) {
+      flash('Не удалось отправить СМС: $e');
+    }
   }
 
   // ───────────────────────── tab navigation ─────────────────────────

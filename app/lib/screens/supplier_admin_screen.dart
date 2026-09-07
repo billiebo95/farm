@@ -3,11 +3,15 @@ import 'package:flutter/services.dart';
 import 'package:provider/provider.dart';
 
 import '../data/mock_data.dart';
+import '../models/client.dart';
+import '../models/debt.dart';
 import '../models/order.dart';
 import '../state/app_state.dart';
 import '../theme/app_theme.dart';
 import '../widgets/app_card.dart';
 import '../widgets/chip_button.dart';
+import '../widgets/labeled_field.dart';
+import '../widgets/primary_button.dart';
 
 /// Supplier-only panel: price-list discounts, the Google-Drive price/DBF
 /// pipeline, and every client's orders — gated by [SupplierLockScreen].
@@ -77,6 +81,7 @@ class SupplierAdminScreen extends StatelessWidget {
               AdminTab.discounts => _DiscountsTab(app: app),
               AdminTab.price => _PriceTab(app: app),
               AdminTab.orders => _OrdersTab(app: app),
+              AdminTab.debts => _DebtsTab(app: app),
             },
           ),
         ],
@@ -447,6 +452,204 @@ class _StatCard extends StatelessWidget {
           Text(label, style: const TextStyle(fontSize: 11, color: AppColors.textTertiary)),
           const SizedBox(height: 3),
           Text(value, style: const TextStyle(fontWeight: FontWeight.w700, fontSize: 22)),
+        ],
+      ),
+    );
+  }
+}
+
+/// Per-client debt ledger: add a charge, register a payment (partial or, via
+/// the shortcut, in full), and send the client an SMS with their operation
+/// history — see [AppState]'s "supplier / admin — debts" section.
+class _DebtsTab extends StatelessWidget {
+  const _DebtsTab({required this.app});
+  final AppState app;
+
+  @override
+  Widget build(BuildContext context) {
+    final totalDebt = MockData.clients.fold<double>(0, (s, c) => s + app.debtBalance(c.code));
+    return ListView(
+      padding: const EdgeInsets.all(12),
+      children: [
+        AppCard(
+          margin: const EdgeInsets.only(bottom: 10),
+          child: Row(
+            mainAxisAlignment: MainAxisAlignment.spaceBetween,
+            children: [
+              const Text('Долг клиентов всего', style: AppText.label),
+              Text(app.money(totalDebt), style: const TextStyle(fontWeight: FontWeight.w700, fontSize: 18, color: AppColors.dangerFg)),
+            ],
+          ),
+        ),
+        for (final c in MockData.clients) _ClientDebtCard(client: c, app: app),
+      ],
+    );
+  }
+}
+
+class _ClientDebtCard extends StatelessWidget {
+  const _ClientDebtCard({required this.client, required this.app});
+  final Client client;
+  final AppState app;
+
+  @override
+  Widget build(BuildContext context) {
+    final code = client.code;
+    final balance = app.debtBalance(code);
+    final inDebt = app.hasDebt(code);
+    final history = app.debtHistory(code);
+
+    return AppCard(
+      margin: const EdgeInsets.only(bottom: 10),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Row(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Expanded(
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Text(client.name, style: const TextStyle(fontWeight: FontWeight.w600, fontSize: 14, height: 1.3)),
+                    const SizedBox(height: 3),
+                    Text('${client.code} · ${client.region}', style: const TextStyle(fontFamily: 'monospace', fontSize: 11, color: AppColors.textTertiary)),
+                  ],
+                ),
+              ),
+              IconButton(
+                onPressed: client.phone.trim().isEmpty ? null : () => app.sendDebtSms(code),
+                icon: const Icon(Icons.sms_outlined),
+                color: AppColors.accent,
+                disabledColor: AppColors.textTertiary,
+                tooltip: client.phone.trim().isEmpty ? 'У клиента не указан телефон' : 'Отправить СМС с историей операций',
+              ),
+            ],
+          ),
+          const SizedBox(height: 4),
+          StatusChip(
+            label: inDebt ? 'Долг ${app.money(balance)}' : 'Долгов нет',
+            fg: inDebt ? AppColors.dangerFg : AppColors.accent,
+            bg: inDebt ? AppColors.dangerBg : AppColors.accentSoftBg,
+            fontSize: 12,
+          ),
+          const SizedBox(height: 11),
+          LabeledField.raw(
+            value: app.debtCommentText(code),
+            onChanged: (v) => app.setDebtComment(code, v),
+            hint: 'Комментарий к операции (необязательно)',
+            height: 40,
+          ),
+          const SizedBox(height: 9),
+          Row(
+            children: [
+              Expanded(
+                child: LabeledField.raw(
+                  value: app.debtChargeText(code),
+                  onChanged: (v) => app.typeDebtCharge(code, v),
+                  hint: 'Сумма долга, ₽',
+                  height: 42,
+                  keyboardType: TextInputType.number,
+                  inputFormatters: [FilteringTextInputFormatter.digitsOnly],
+                ),
+              ),
+              const SizedBox(width: 8),
+              _DebtActionButton(label: 'Добавить долг', color: AppColors.dangerFg, onTap: () => app.addDebtCharge(code)),
+            ],
+          ),
+          const SizedBox(height: 8),
+          Row(
+            children: [
+              Expanded(
+                child: LabeledField.raw(
+                  value: app.debtPaymentText(code),
+                  onChanged: (v) => app.typeDebtPayment(code, v),
+                  hint: 'Сумма оплаты, ₽',
+                  height: 42,
+                  keyboardType: TextInputType.number,
+                  inputFormatters: [FilteringTextInputFormatter.digitsOnly],
+                ),
+              ),
+              const SizedBox(width: 8),
+              _DebtActionButton(label: 'Погасить', color: AppColors.accent, onTap: () => app.payDebt(code)),
+            ],
+          ),
+          if (inDebt) ...[
+            const SizedBox(height: 6),
+            Align(
+              alignment: Alignment.centerLeft,
+              child: TextOnlyButton(
+                label: 'Погасить полностью · ${app.money(balance)}',
+                onPressed: () => app.payDebtInFull(code),
+                fontSize: 13,
+              ),
+            ),
+          ],
+          if (history.isNotEmpty) ...[
+            const SizedBox(height: 9),
+            const Divider(height: 1, color: AppColors.borderHairline),
+            const SizedBox(height: 9),
+            const Text('История операций', style: AppText.label),
+            const SizedBox(height: 6),
+            for (final op in history.take(6)) _DebtOpRow(op: op, app: app),
+          ],
+        ],
+      ),
+    );
+  }
+}
+
+class _DebtActionButton extends StatelessWidget {
+  const _DebtActionButton({required this.label, required this.color, required this.onTap});
+  final String label;
+  final Color color;
+  final VoidCallback onTap;
+
+  @override
+  Widget build(BuildContext context) {
+    return SizedBox(
+      height: 42,
+      child: ElevatedButton(
+        onPressed: onTap,
+        style: ElevatedButton.styleFrom(
+          backgroundColor: color,
+          foregroundColor: Colors.white,
+          elevation: 0,
+          padding: const EdgeInsets.symmetric(horizontal: 14),
+          shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(11)),
+        ),
+        child: Text(label, style: const TextStyle(fontWeight: FontWeight.w600, fontSize: 12)),
+      ),
+    );
+  }
+}
+
+class _DebtOpRow extends StatelessWidget {
+  const _DebtOpRow({required this.op, required this.app});
+  final DebtOperation op;
+  final AppState app;
+
+  @override
+  Widget build(BuildContext context) {
+    final isCharge = op.kind == DebtOpKind.charge;
+    return Padding(
+      padding: const EdgeInsets.symmetric(vertical: 4),
+      child: Row(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Expanded(
+            child: Text(
+              '${op.date} · ${op.kind.label}${op.comment.isEmpty ? '' : ' — ${op.comment}'}',
+              style: const TextStyle(fontSize: 12, color: AppColors.textSecondary),
+              maxLines: 2,
+              overflow: TextOverflow.ellipsis,
+            ),
+          ),
+          const SizedBox(width: 8),
+          Text(
+            '${isCharge ? '+' : '−'}${app.money(op.amount)}',
+            style: TextStyle(fontFamily: 'monospace', fontWeight: FontWeight.w600, fontSize: 12, color: isCharge ? AppColors.dangerFg : AppColors.accent),
+          ),
         ],
       ),
     );
