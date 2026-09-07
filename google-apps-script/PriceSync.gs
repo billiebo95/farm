@@ -14,12 +14,7 @@
  *  3. doPost() — принимает оформленный в приложении заказ (JSON) и дописывает
  *     его строкой в отдельную Google Таблицу "Заказы (Аптека Опт)" на Диске
  *     (создаётся автоматически при первом заказе). Файл "Прайс.xlsx" при
- *     этом не трогается. То же doPost, по полю `type` в теле запроса,
- *     принимает операции по долгу клиента ("debt" — в свою Google Таблицу
- *     "Долги (Аптека Опт)") и отправку СМС ("sms" — через smsc.ru, см.
- *     SMSC_LOGIN/SMSC_PASSWORD ниже). doGet() с ?type=debts отдаёт текущий
- *     журнал долгов, сгруппированный по клиенту, — так все устройства
- *     администратора видят одни и те же остатки.
+ *     этом не трогается.
  *
  * НАСТРОЙКА (один раз, БЕЗ "Advanced Services"):
  *  1. script.google.com -> New project.
@@ -70,26 +65,6 @@ const ORDERS_HEADER = [
   'Сумма',
   'Товары (JSON)',
 ];
-
-// Имя Google Таблицы с журналом долгов (создаётся автоматически).
-const DEBTS_SHEET_NAME = 'Долги (Аптека Опт)';
-const PROP_DEBTS_SHEET_ID = 'debtsSheetId';
-
-const DEBTS_HEADER = [
-  'Дата',
-  'Код доставки',
-  'Клиент',
-  'Операция',
-  'Сумма',
-  'Остаток после операции',
-  'Комментарий',
-];
-
-// Шлюз СМС (smsc.ru, send.php) — впиши логин/пароль своего аккаунта, чтобы
-// заработала отправка истории долга клиенту. Пока не заполнено, doPost с
-// type "sms" отвечает ok:false с понятной причиной — ничего не ломает.
-const SMSC_LOGIN = '';
-const SMSC_PASSWORD = '';
 
 /** Разовая настройка: создаёт триггер по расписанию и делает первую синхронизацию. */
 function setup() {
@@ -251,30 +226,17 @@ function writeCache_(jsonString) {
 }
 
 /**
- * Веб-приложение: принимает POST от приложения. Тип запроса определяется
- * полем `type` в теле:
- *  - отсутствует или "order" — оформленный заказ (как раньше, без
- *    изменений). Ожидаемое тело: { number, date, client, code, region,
- *    comment, total, lines: [ { code, name, price, quantity, sum }, ... ] }
- *  - "debt" — операция по долгу клиента (начисление или оплата). Ожидаемое
- *    тело: { code, client, kind: "charge"|"payment", amount, balanceAfter,
- *    date, comment }
- *  - "sms" — отправить клиенту СМС (используется для истории долга).
- *    Ожидаемое тело: { phone, text }
+ * Веб-приложение: принимает оформленный заказ и дописывает строку в
+ * журнал заказов. Ожидаемое тело запроса (JSON):
+ *   { number, date, client, code, region, comment, total, lines: [
+ *       { code, name, price, quantity, sum }, ...
+ *   ] }
  */
 function doPost(e) {
   try {
     const body = JSON.parse(e.postData.contents);
-    const type = body.type || 'order';
-
-    if (type === 'debt') {
-      return jsonOutput_(appendDebtOperation_(body));
-    }
-    if (type === 'sms') {
-      return jsonOutput_(sendSms_(body.phone, body.text));
-    }
-
     const sheet = getOrCreateOrdersSheet_();
+
     sheet.appendRow([
       body.date || new Date().toISOString(),
       body.number || '',
@@ -287,144 +249,12 @@ function doPost(e) {
       JSON.stringify(body.lines || []),
     ]);
 
-    return jsonOutput_({ ok: true });
+    return ContentService.createTextOutput(JSON.stringify({ ok: true }))
+      .setMimeType(ContentService.MimeType.JSON);
   } catch (err) {
-    return jsonOutput_({ ok: false, error: String(err) });
+    return ContentService.createTextOutput(JSON.stringify({ ok: false, error: String(err) }))
+      .setMimeType(ContentService.MimeType.JSON);
   }
-}
-
-function jsonOutput_(payload) {
-  return ContentService.createTextOutput(JSON.stringify(payload)).setMimeType(ContentService.MimeType.JSON);
-}
-
-/** Дописывает строку операции по долгу (начисление/оплата) в журнал долгов. */
-function appendDebtOperation_(body) {
-  const sheet = getOrCreateDebtsSheet_();
-  const kind = body.kind === 'payment' ? 'Оплата' : 'Долг';
-
-  sheet.appendRow([
-    body.date || new Date().toISOString(),
-    body.code || '',
-    body.client || '',
-    kind,
-    toNumber_(body.amount),
-    toNumber_(body.balanceAfter),
-    body.comment || '',
-  ]);
-
-  return { ok: true };
-}
-
-/** Находит (или создаёт при первой операции) Google Таблицу — журнал долгов. */
-function getOrCreateDebtsSheet_() {
-  const props = PropertiesService.getScriptProperties();
-  const savedId = props.getProperty(PROP_DEBTS_SHEET_ID);
-
-  if (savedId) {
-    try {
-      return SpreadsheetApp.openById(savedId).getSheets()[0];
-    } catch (e) {
-      // Таблицу кто-то удалил вручную — создадим заново.
-    }
-  }
-
-  const ss = SpreadsheetApp.create(DEBTS_SHEET_NAME);
-  const sheet = ss.getSheets()[0];
-  sheet.appendRow(DEBTS_HEADER);
-  sheet.setFrozenRows(1);
-
-  props.setProperty(PROP_DEBTS_SHEET_ID, ss.getId());
-  return sheet;
-}
-
-/**
- * Читает весь журнал долгов и группирует строки по коду доставки — у
- * каждого клиента получается его история операций по порядку записи и
- * текущий остаток (Остаток последней операции). Отдаётся по GET
- * ?type=debts, чтобы все устройства администратора видели одни и те же
- * долги, а не только то, что сами туда записали.
- */
-function buildDebtLedger_() {
-  const props = PropertiesService.getScriptProperties();
-  const savedId = props.getProperty(PROP_DEBTS_SHEET_ID);
-  if (!savedId) return [];
-
-  let sheet;
-  try {
-    sheet = SpreadsheetApp.openById(savedId).getSheets()[0];
-  } catch (e) {
-    return [];
-  }
-
-  const values = sheet.getDataRange().getValues();
-  const rows = values.slice(1); // без заголовка
-
-  const byCode = {};
-  const order = [];
-  for (let i = 0; i < rows.length; i++) {
-    const r = rows[i];
-    const code = (r[1] || '').toString().trim();
-    if (!code) continue;
-
-    if (!byCode[code]) {
-      byCode[code] = { code: code, operations: [] };
-      order.push(code);
-    }
-
-    byCode[code].operations.push({
-      date: formatDate_(r[0]),
-      kind: (r[3] || '').toString() === 'Оплата' ? 'payment' : 'charge',
-      amount: toNumber_(r[4]),
-      balanceAfter: toNumber_(r[5]),
-      comment: (r[6] || '').toString(),
-    });
-  }
-
-  return order.map(function (code) { return byCode[code]; });
-}
-
-/**
- * Отправляет СМС клиенту через шлюз smsc.ru (send.php, fmt=3 — ответ в
- * JSON). Требует заполненных SMSC_LOGIN/SMSC_PASSWORD выше — пока их нет,
- * возвращает понятную ошибку и ничего не отправляет.
- */
-function sendSms_(phone, text) {
-  const cleanPhone = (phone || '').toString().trim();
-  const cleanText = (text || '').toString().trim();
-
-  if (!cleanPhone) return { ok: false, error: 'Не указан телефон клиента' };
-  if (!cleanText) return { ok: false, error: 'Пустой текст СМС' };
-  if (!SMSC_LOGIN || !SMSC_PASSWORD) {
-    return { ok: false, error: 'СМС-шлюз не настроен (SMSC_LOGIN/SMSC_PASSWORD в PriceSync.gs)' };
-  }
-
-  const url = 'https://smsc.ru/sys/send.php?' + [
-    'login=' + encodeURIComponent(SMSC_LOGIN),
-    'psw=' + encodeURIComponent(SMSC_PASSWORD),
-    'phones=' + encodeURIComponent(cleanPhone),
-    'mes=' + encodeURIComponent(cleanText),
-    'charset=utf-8',
-    'fmt=3',
-  ].join('&');
-
-  const resp = UrlFetchApp.fetch(url, { muteHttpExceptions: true });
-  const code = resp.getResponseCode();
-  if (code !== 200) {
-    return { ok: false, error: 'СМС-шлюз вернул ошибку ' + code };
-  }
-
-  let parsed;
-  try {
-    parsed = JSON.parse(resp.getContentText());
-  } catch (e) {
-    return { ok: false, error: 'Не удалось разобрать ответ СМС-шлюза' };
-  }
-
-  if (parsed.error) {
-    return { ok: false, error: 'СМС-шлюз: ' + parsed.error };
-  }
-
-  return { ok: true };
 }
 
 /** Находит (или создаёт при первом заказе) Google Таблицу — журнал заказов. */
@@ -449,19 +279,8 @@ function getOrCreateOrdersSheet_() {
   return sheet;
 }
 
-/**
- * Веб-приложение: по умолчанию отдаёт текущий кэш прайса как JSON (как
- * раньше). С `?type=debts` отдаёт вместо этого текущий журнал долгов
- * (см. buildDebtLedger_) — тем же GET, тем же URL, приложение просто
- * добавляет параметр в запросе.
- */
+/** Веб-приложение: отдаёт текущий кэш как JSON. */
 function doGet(e) {
-  const type = (e && e.parameter && e.parameter.type) || 'price';
-
-  if (type === 'debts') {
-    return jsonOutput_({ debts: buildDebtLedger_() });
-  }
-
   const props = PropertiesService.getScriptProperties();
   let cachedId = props.getProperty(PROP_CACHE_FILE_ID);
 
