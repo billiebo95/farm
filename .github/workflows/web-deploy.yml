@@ -1,0 +1,77 @@
+name: Web Build & Deploy
+
+# Builds the Flutter app for the browser (`flutter build web`) and publishes
+# it to GitHub Pages. Separate from android-build.yml, which only builds
+# APKs — this is the "приложение веб" version, served at
+# https://<owner>.github.io/<repo>/ once Pages is switched on (see below).
+#
+# One-time setup required (can't be done from a workflow file): open this
+# repo's Settings → Pages → Build and deployment → Source, and pick
+# "GitHub Actions". Until that's set, this workflow builds successfully but
+# the deploy step has nothing to publish to.
+on:
+  push:
+    branches:
+      - main
+    paths:
+      - "app/**"
+      - ".github/workflows/web-deploy.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+# Only one Pages deployment at a time; let an in-flight one finish rather
+# than cancel it mid-publish.
+concurrency:
+  group: "pages"
+  cancel-in-progress: false
+
+jobs:
+  build-and-deploy:
+    name: Build Flutter web & publish to Pages
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    defaults:
+      run:
+        working-directory: app
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Flutter
+        uses: subosito/flutter-action@v2
+        with:
+          flutter-version: "3.47.2"
+          channel: "stable"
+          cache: true
+
+      - name: Install dependencies
+        run: flutter pub get
+
+      - name: Analyze
+        run: flutter analyze
+
+      - name: Run tests
+        run: flutter test
+
+      # --base-href matches this project-site path (github.io/<repo>/) so
+      # the built index.html resolves its assets correctly once deployed.
+      - name: Build web (release)
+        run: flutter build web --release --base-href /${{ github.event.repository.name }}/
+
+      - name: Configure Pages
+        uses: actions/configure-pages@v5
+
+      - name: Upload build output
+        uses: actions/upload-pages-artifact@v3
+        with:
+          path: app/build/web
+
+      - name: Deploy to GitHub Pages
+        id: deployment
+        uses: actions/deploy-pages@v4
